@@ -35,9 +35,10 @@ const Page = async ({ params }: SearchParamProps) => {
           ))}
         </section>
       ) : (
-        <p className="empty-list">No Files Uploaded</p>
+        <p className="empty-list">No files uploaded</p>
       )}
     </div>
   );
 };
+
 export default Page;
