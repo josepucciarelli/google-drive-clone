@@ -12,7 +12,7 @@ interface Props {
   email: string;
 }
 
-const SideBar = ({ fullName, avatar, email }: Props) => {
+const Sidebar = ({ fullName, avatar, email }: Props) => {
   const pathname = usePathname();
 
   return (
@@ -20,11 +20,12 @@ const SideBar = ({ fullName, avatar, email }: Props) => {
       <Link href="/">
         <Image
           src="/assets/icons/logo-full-brand.svg"
-          alt="Logo"
+          alt="logo"
           width={160}
           height={50}
           className="hidden h-auto lg:block"
         />
+
         <Image
           src="/assets/icons/logo-brand.svg"
           alt="logo"
@@ -60,6 +61,7 @@ const SideBar = ({ fullName, avatar, email }: Props) => {
           ))}
         </ul>
       </nav>
+
       <Image
         src="/assets/images/files-2.png"
         alt="logo"
@@ -67,6 +69,7 @@ const SideBar = ({ fullName, avatar, email }: Props) => {
         height={418}
         className="w-full"
       />
+
       <div className="sidebar-user-info">
         <Image
           src={avatar}
@@ -83,4 +86,4 @@ const SideBar = ({ fullName, avatar, email }: Props) => {
     </aside>
   );
 };
-export default SideBar;
+export default Sidebar;
