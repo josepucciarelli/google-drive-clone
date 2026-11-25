@@ -1,5 +1,10 @@
 import type { NextConfig } from "next";
 
+// File thumbnails are served from your Appwrite region's host
+const appwriteHost = new URL(
+  process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT || "https://nyc.cloud.appwrite.io/v1",
+).hostname;
+
 const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
@@ -24,7 +29,7 @@ const nextConfig: NextConfig = {
       },
       {
         protocol: "https",
-        hostname: "nyc.cloud.appwrite.io",
+        hostname: appwriteHost,
       },
     ],
   },

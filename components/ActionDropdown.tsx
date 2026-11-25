@@ -30,8 +30,9 @@ import {
 } from "@/lib/actions/file.actions";
 import { usePathname } from "next/navigation";
 import { FileDetails, ShareInput } from "@/components/ActionsModalContent";
+import { useToast } from "@/hooks/use-toast";
 
-const ActionDropdown = ({ file }: { file: Models.Document }) => {
+const ActionDropdown = ({ file }: { file: Models.DefaultRow }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [action, setAction] = useState<ActionType | null>(null);
@@ -40,6 +41,18 @@ const ActionDropdown = ({ file }: { file: Models.Document }) => {
   const [emails, setEmails] = useState<string[]>([]);
 
   const path = usePathname();
+  const { toast } = useToast();
+
+  const showActionError = () =>
+    toast({
+      description: (
+        <p className="body-2 text-white">
+          The change couldn&apos;t be saved. Only the owner can change this
+          file.
+        </p>
+      ),
+      className: "error-toast",
+    });
 
   const closeAllModals = () => {
     setIsModalOpen(false);
@@ -58,27 +71,34 @@ const ActionDropdown = ({ file }: { file: Models.Document }) => {
       rename: () =>
         renameFile({ fileId: file.$id, name, extension: file.extension, path }),
       share: () => updateFileUsers({ fileId: file.$id, emails, path }),
-      delete: () =>
-        deleteFile({ fileId: file.$id, bucketFileId: file.bucketFileId, path }),
+      delete: () => deleteFile({ fileId: file.$id, path }),
     };
 
-    success = await actions[action.value as keyof typeof actions]();
+    try {
+      success = await actions[action.value as keyof typeof actions]();
 
-    if (success) closeAllModals();
-
-    setIsLoading(false);
+      if (success) closeAllModals();
+    } catch {
+      showActionError();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleRemoveUser = async (email: string) => {
     const updatedEmails = emails.filter((e) => e !== email);
 
-    const success = await updateFileUsers({
-      fileId: file.$id,
-      emails: updatedEmails,
-      path,
-    });
+    try {
+      const success = await updateFileUsers({
+        fileId: file.$id,
+        emails: updatedEmails,
+        path,
+      });
 
-    if (success) setEmails(updatedEmails);
+      if (success) setEmails(updatedEmails);
+    } catch {
+      showActionError();
+    }
     closeAllModals();
   };
 

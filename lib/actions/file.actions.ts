@@ -1,6 +1,6 @@
 "use server";
 
-import { createAdminClient, createSessionClient } from "@/lib/appwrite";
+import { createAdminClient } from "@/lib/appwrite";
 import { InputFile } from "node-appwrite/file";
 import { appwriteConfig } from "@/lib/appwrite/congif";
 import { ID, Models, Query } from "node-appwrite";
@@ -13,22 +13,40 @@ const handleError = (error: unknown, message: string) => {
   throw error;
 };
 
-export const uploadFile = async ({
-  file,
-  ownerId,
-  accountId,
-  path,
-}: UploadFileProps) => {
-  const { storage, databases } = await createAdminClient();
+// The admin client bypasses Appwrite permissions, so every change to a file
+// has to check here that it belongs to the signed-in user.
+const requireOwnedFile = async (fileId: string) => {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) throw new Error("User is not authenticated.");
+
+  const { tables } = await createAdminClient();
+  const file = await tables.getRow({
+    databaseId: appwriteConfig.databaseId,
+    tableId: appwriteConfig.filesCollectionId,
+    rowId: fileId,
+  });
+
+  if (file.accountId !== currentUser.accountId) {
+    throw new Error("Only the owner can change this file.");
+  }
+
+  return file;
+};
+
+export const uploadFile = async ({ file, path }: UploadFileProps) => {
+  const { storage, tables } = await createAdminClient();
 
   try {
+    const currentUser = await getCurrentUser();
+    if (!currentUser) throw new Error("User is not authenticated.");
+
     const inputFile = InputFile.fromBuffer(file, file.name);
 
-    const bucketFile = await storage.createFile(
-      appwriteConfig.bucketId,
-      ID.unique(),
-      inputFile,
-    );
+    const bucketFile = await storage.createFile({
+      bucketId: appwriteConfig.bucketId,
+      fileId: ID.unique(),
+      file: inputFile,
+    });
 
     const fileDocument = {
       type: getFileType(bucketFile.name).type,
@@ -36,21 +54,24 @@ export const uploadFile = async ({
       url: constructFileUrl(bucketFile.$id),
       extension: getFileType(bucketFile.name).extension,
       size: bucketFile.sizeOriginal,
-      owner: ownerId,
-      accountId,
+      owner: currentUser.$id,
+      accountId: currentUser.accountId,
       users: [],
       bucketFileId: bucketFile.$id,
     };
 
-    const newFile = await databases
-      .createDocument(
-        appwriteConfig.databaseId,
-        appwriteConfig.filesCollectionId,
-        ID.unique(),
-        fileDocument,
-      )
+    const newFile = await tables
+      .createRow({
+        databaseId: appwriteConfig.databaseId,
+        tableId: appwriteConfig.filesCollectionId,
+        rowId: ID.unique(),
+        data: fileDocument,
+      })
       .catch(async (error: unknown) => {
-        await storage.deleteFile(appwriteConfig.bucketId, bucketFile.$id);
+        await storage.deleteFile({
+          bucketId: appwriteConfig.bucketId,
+          fileId: bucketFile.$id,
+        });
         handleError(error, "Failed to create file document");
       });
 
@@ -62,13 +83,15 @@ export const uploadFile = async ({
 };
 
 const createQueries = (
-  currentUser: Models.Document,
+  currentUser: Models.DefaultRow,
   types: string[],
   searchText: string,
   sort: string,
   limit?: number,
 ) => {
   const queries = [
+    // Related rows are only returned when they are selected explicitly
+    Query.select(["*", "owner.*"]),
     Query.or([
       Query.equal("owner", [currentUser.$id]),
       Query.contains("users", [currentUser.email]),
@@ -96,7 +119,7 @@ export const getFiles = async ({
   sort = "$createdAt-desc",
   limit,
 }: GetFilesProps) => {
-  const { databases } = await createAdminClient();
+  const { tables } = await createAdminClient();
 
   try {
     const currentUser = await getCurrentUser();
@@ -105,14 +128,13 @@ export const getFiles = async ({
 
     const queries = createQueries(currentUser, types, searchText, sort, limit);
 
-    const files = await databases.listDocuments(
-      appwriteConfig.databaseId,
-      appwriteConfig.filesCollectionId,
+    const { total, rows } = await tables.listRows({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.filesCollectionId,
       queries,
-    );
+    });
 
-    console.log({ files });
-    return parseStringify(files);
+    return parseStringify({ total, documents: rows });
   } catch (error) {
     handleError(error, "Failed to get files");
   }
@@ -124,18 +146,20 @@ export const renameFile = async ({
   extension,
   path,
 }: RenameFileProps) => {
-  const { databases } = await createAdminClient();
+  const { tables } = await createAdminClient();
 
   try {
+    await requireOwnedFile(fileId);
+
     const newName = `${name}.${extension}`;
-    const updatedFile = await databases.updateDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.filesCollectionId,
-      fileId,
-      {
+    const updatedFile = await tables.updateRow({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.filesCollectionId,
+      rowId: fileId,
+      data: {
         name: newName,
       },
-    );
+    });
 
     revalidatePath(path);
     return parseStringify(updatedFile);
@@ -149,17 +173,19 @@ export const updateFileUsers = async ({
   emails,
   path,
 }: UpdateFileUsersProps) => {
-  const { databases } = await createAdminClient();
+  const { tables } = await createAdminClient();
 
   try {
-    const updatedFile = await databases.updateDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.filesCollectionId,
-      fileId,
-      {
+    await requireOwnedFile(fileId);
+
+    const updatedFile = await tables.updateRow({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.filesCollectionId,
+      rowId: fileId,
+      data: {
         users: emails,
       },
-    );
+    });
 
     revalidatePath(path);
     return parseStringify(updatedFile);
@@ -168,23 +194,22 @@ export const updateFileUsers = async ({
   }
 };
 
-export const deleteFile = async ({
-  fileId,
-  bucketFileId,
-  path,
-}: DeleteFileProps) => {
-  const { databases, storage } = await createAdminClient();
+export const deleteFile = async ({ fileId, path }: DeleteFileProps) => {
+  const { tables, storage } = await createAdminClient();
 
   try {
-    const deletedFile = await databases.deleteDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.filesCollectionId,
-      fileId,
-    );
+    const file = await requireOwnedFile(fileId);
 
-    if (deletedFile) {
-      await storage.deleteFile(appwriteConfig.bucketId, bucketFileId);
-    }
+    await tables.deleteRow({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.filesCollectionId,
+      rowId: fileId,
+    });
+
+    await storage.deleteFile({
+      bucketId: appwriteConfig.bucketId,
+      fileId: file.bucketFileId,
+    });
 
     revalidatePath(path);
     return parseStringify({ status: "success" });
@@ -195,15 +220,31 @@ export const deleteFile = async ({
 
 export async function getTotalSpaceUsed() {
   try {
-    const { databases } = await createSessionClient();
+    const { tables } = await createAdminClient();
     const currentUser = await getCurrentUser();
     if (!currentUser) throw new Error("User is not authenticated.");
 
-    const files = await databases.listDocuments(
-      appwriteConfig.databaseId,
-      appwriteConfig.filesCollectionId,
-      [Query.equal("owner", [currentUser.$id])],
-    );
+    // Appwrite returns 25 rows by default, so read every page
+    const PAGE_SIZE = 500;
+    const files: Models.DefaultRow[] = [];
+    let page: Models.DefaultRow[];
+
+    do {
+      const queries = [
+        Query.equal("owner", [currentUser.$id]),
+        Query.limit(PAGE_SIZE),
+      ];
+      if (files.length > 0) {
+        queries.push(Query.cursorAfter(files[files.length - 1].$id));
+      }
+
+      ({ rows: page } = await tables.listRows({
+        databaseId: appwriteConfig.databaseId,
+        tableId: appwriteConfig.filesCollectionId,
+        queries,
+      }));
+      files.push(...page);
+    } while (page.length === PAGE_SIZE);
 
     const totalSpace = {
       image: { size: 0, latestDate: "" },
@@ -215,7 +256,7 @@ export async function getTotalSpaceUsed() {
       all: 2 * 1024 * 1024 * 1024 /* 2GB available bucket storage */,
     };
 
-    files.documents.forEach((file) => {
+    files.forEach((file) => {
       const fileType = file.type as FileType;
       totalSpace[fileType].size += file.size;
       totalSpace.used += file.size;

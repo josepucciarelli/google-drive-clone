@@ -9,15 +9,15 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 const getUserByEmail = async (email: string) => {
-  const { databases } = await createAdminClient();
+  const { tables } = await createAdminClient();
 
-  const result = await databases.listDocuments(
-    appwriteConfig.databaseId,
-    appwriteConfig.usersCollectionId,
-    [Query.equal("email", [email])],
-  );
+  const result = await tables.listRows({
+    databaseId: appwriteConfig.databaseId,
+    tableId: appwriteConfig.usersCollectionId,
+    queries: [Query.equal("email", [email])],
+  });
 
-  return result.total > 0 ? result.documents[0] : null;
+  return result.total > 0 ? result.rows[0] : null;
 };
 
 const handleError = (error: unknown, message: string) => {
@@ -29,7 +29,10 @@ export const sendEmailOTP = async ({ email }: { email: string }) => {
   const { account } = await createAdminClient();
 
   try {
-    const session = await account.createEmailToken(ID.unique(), email);
+    const session = await account.createEmailToken({
+      userId: ID.unique(),
+      email,
+    });
     return session.userId;
   } catch (error) {
     handleError(error, "Failed to send email OTP");
@@ -49,19 +52,19 @@ export const createAccount = async ({
   if (!accountId) throw new Error("Failed to send an OTP");
 
   if (!existingUser) {
-    const { databases } = await createAdminClient();
+    const { tables } = await createAdminClient();
 
-    await databases.createDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.usersCollectionId,
-      ID.unique(),
-      {
+    await tables.createRow({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.usersCollectionId,
+      rowId: ID.unique(),
+      data: {
         fullName,
         email,
         avatar: avatarPlaceholderUrl,
         accountId,
       },
-    );
+    });
   }
 
   return parseStringify({ accountId });
@@ -77,7 +80,10 @@ export const verifySecret = async ({
   try {
     const { account } = await createAdminClient();
 
-    const session = await account.createSession(accountId, password);
+    const session = await account.createSession({
+      userId: accountId,
+      secret: password,
+    });
 
     (await cookies()).set("appwrite-session", session.secret, {
       path: "/",
@@ -94,19 +100,22 @@ export const verifySecret = async ({
 
 export const getCurrentUser = async () => {
   try {
-    const { databases, account } = await createSessionClient();
+    const { account } = await createSessionClient();
 
     const result = await account.get();
 
-    const user = await databases.listDocuments(
-      appwriteConfig.databaseId,
-      appwriteConfig.usersCollectionId,
-      [Query.equal("accountId", result.$id)],
-    );
+    // Tables have no client permissions, so data is read with the API key
+    const { tables } = await createAdminClient();
+
+    const user = await tables.listRows({
+      databaseId: appwriteConfig.databaseId,
+      tableId: appwriteConfig.usersCollectionId,
+      queries: [Query.equal("accountId", result.$id)],
+    });
 
     if (user.total <= 0) return null;
 
-    return parseStringify(user.documents[0]);
+    return parseStringify(user.rows[0]);
   } catch (error) {
     console.log(error);
   }
@@ -116,7 +125,7 @@ export const signOutUser = async () => {
   const { account } = await createSessionClient();
 
   try {
-    await account.deleteSession("current");
+    await account.deleteSession({ sessionId: "current" });
     (await cookies()).delete("appwrite-session");
   } catch (error) {
     handleError(error, "Failed to sign out user");
